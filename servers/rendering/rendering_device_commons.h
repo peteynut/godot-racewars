@@ -1036,6 +1036,15 @@ public:
 		SUPPORTS_RAY_QUERY,
 		SUPPORTS_RAYTRACING_PIPELINE,
 		SUPPORTS_HDR_OUTPUT,
+		// RaceWars fork: capability bits for the proprietary upscalers wired into
+		// the Windows D3D12 export templates (see UPSCALING.md). Deliberately given
+		// high, explicit values so upstream adding more SUPPORTS_* enumerators can
+		// never collide, and deliberately left UNBOUND so the scripting/C# API
+		// (extension_api.json, GodotSharp) is byte-identical to stock - the game
+		// probes them by integer cast. Every stock driver's has_feature() returns
+		// false for them via its default branch until the SDK wrappers land.
+		SUPPORTS_DLSS = 100,
+		SUPPORTS_FSR3_UPSCALER = 101,
 	};
 
 	enum SubgroupOperations {

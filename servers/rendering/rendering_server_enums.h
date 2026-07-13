@@ -460,6 +460,12 @@ enum ViewportScaling3DMode {
 	VIEWPORT_SCALING_3D_MODE_METALFX_SPATIAL,
 	VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL,
 	VIEWPORT_SCALING_3D_MODE_NEAREST,
+	// RaceWars fork: proprietary temporal upscalers provided by the Windows
+	// D3D12 export templates only (see UPSCALING.md). Absent on stock engines.
+	// 4.7 rebase: NEAREST took value 5, so DLSS moved 5 -> 6, FSR3 6 -> 7
+	// (UpscalerCatalog.cs carries the same integers).
+	VIEWPORT_SCALING_3D_MODE_DLSS,
+	VIEWPORT_SCALING_3D_MODE_FSR3,
 	VIEWPORT_SCALING_3D_MODE_MAX,
 	VIEWPORT_SCALING_3D_MODE_OFF = 255, // for internal use only
 };
@@ -474,7 +480,7 @@ enum ViewportScaling3DType {
 inline ViewportScaling3DType scaling_3d_mode_type(ViewportScaling3DMode p_mode) {
 	if (p_mode == VIEWPORT_SCALING_3D_MODE_NEAREST || p_mode == VIEWPORT_SCALING_3D_MODE_BILINEAR || p_mode == VIEWPORT_SCALING_3D_MODE_FSR || p_mode == VIEWPORT_SCALING_3D_MODE_METALFX_SPATIAL) {
 		return VIEWPORT_SCALING_3D_TYPE_SPATIAL;
-	} else if (p_mode == VIEWPORT_SCALING_3D_MODE_FSR2 || p_mode == VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL) {
+	} else if (p_mode == VIEWPORT_SCALING_3D_MODE_FSR2 || p_mode == VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL || p_mode == VIEWPORT_SCALING_3D_MODE_DLSS || p_mode == VIEWPORT_SCALING_3D_MODE_FSR3) {
 		return VIEWPORT_SCALING_3D_TYPE_TEMPORAL;
 	}
 	return VIEWPORT_SCALING_3D_TYPE_NONE;

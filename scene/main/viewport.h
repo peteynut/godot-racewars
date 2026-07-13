@@ -104,6 +104,12 @@ public:
 		SCALING_3D_MODE_METALFX_SPATIAL,
 		SCALING_3D_MODE_METALFX_TEMPORAL,
 		SCALING_3D_MODE_NEAREST,
+		// RaceWars fork: proprietary temporal upscalers provided by the Windows
+		// D3D12 export templates only (see UPSCALING.md). Absent on stock engines.
+		// 4.7 rebase: NEAREST took value 5, so DLSS moved 5 -> 6, FSR3 6 -> 7
+		// (UpscalerCatalog.cs carries the same integers).
+		SCALING_3D_MODE_DLSS,
+		SCALING_3D_MODE_FSR3,
 		SCALING_3D_MODE_MAX
 	};
 

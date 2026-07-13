@@ -1,0 +1,124 @@
+# RaceWars fork: builds the Windows D3D12 export templates (Mono/C#) that carry
+# the DLSS / FSR 3-4 upscalers. This is the only workflow the fork needs; the
+# stock upstream workflows can be removed on the fork to save CI minutes.
+#
+# Phase 1 note: the templates this produces are functionally identical to stock
+# Godot 4.6.3 (the new upscalers report unsupported until the Phase 2 SDK
+# wrappers land) - this workflow exists so the pipeline is proven and ready.
+name: 🏎 RaceWars Windows Templates
+on:
+  workflow_dispatch:
+  push:
+    branches: [racewars-upscalers]
+
+env:
+  SCONS_FLAGS: >-
+    production=yes
+    debug_symbols=no
+    module_mono_enabled=yes
+    module_text_server_fb_enabled=yes
+    "angle_libs=${{ github.workspace }}/"
+    "accesskit_sdk_path=${{ github.workspace }}/accesskit-c-0.21.2/"
+  SCONS_CACHE_MSVC_CONFIG: true
+  PYTHONIOENCODING: utf8
+
+jobs:
+  windows-mono-templates:
+    runs-on: windows-latest
+    name: Windows D3D12 Mono templates (x86_64)
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Restore Godot build cache
+        uses: ./.github/actions/godot-cache-restore
+        with:
+          cache-name: racewars-windows-mono-templates
+        continue-on-error: true
+
+      - name: Setup Python and SCons
+        uses: ./.github/actions/godot-deps
+
+      - name: Download Direct3D 12 SDK components
+        shell: sh
+        id: d3d12-sdk
+        run: |
+          if python ./misc/scripts/install_d3d12_sdk_windows.py; then
+            echo "D3D12_ENABLED=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::D3D12 SDK install failed - DLSS/FSR require D3D12, aborting."
+            echo "D3D12_ENABLED=no" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Download pre-built ANGLE static libraries
+        uses: dsaltares/fetch-gh-release-asset@1.1.2
+        with:
+          repo: godotengine/godot-angle-static
+          version: tags/chromium/6601.2
+          file: godot-angle-static-x86_64-msvc-release.zip
+          target: angle/angle.zip
+      - name: Extract pre-built ANGLE static libraries
+        run: Expand-Archive -Force angle/angle.zip ${{ github.workspace }}/
+
+      - name: Download pre-built AccessKit
+        uses: dsaltares/fetch-gh-release-asset@1.1.2
+        with:
+          repo: godotengine/godot-accesskit-c-static
+          version: tags/0.21.2
+          file: accesskit-c-0.21.2.zip
+          target: accesskit-c-0.21.2/accesskit_c.zip
+      - name: Extract pre-built AccessKit
+        run: unzip -o accesskit-c-0.21.2/accesskit_c.zip
+
+      # 1. Editor build is required only to generate the C# glue.
+      - name: Build editor (for Mono glue)
+        uses: ./.github/actions/godot-build
+        with:
+          scons-flags: ${{ env.SCONS_FLAGS }} d3d12=${{ steps.d3d12-sdk.outputs.D3D12_ENABLED }}
+          platform: windows
+          target: editor
+
+      - name: Generate Mono glue
+        run: ./bin/godot.windows.editor.x86_64.mono.exe --headless --generate-mono-glue ./modules/mono/glue
+
+      # 2. The actual shippable templates.
+      - name: Build template_release
+        uses: ./.github/actions/godot-build
+        with:
+          scons-flags: ${{ env.SCONS_FLAGS }} d3d12=${{ steps.d3d12-sdk.outputs.D3D12_ENABLED }}
+          platform: windows
+          target: template_release
+
+      - name: Build template_debug
+        uses: ./.github/actions/godot-build
+        with:
+          scons-flags: ${{ env.SCONS_FLAGS }} d3d12=${{ steps.d3d12-sdk.outputs.D3D12_ENABLED }}
+          platform: windows
+          target: template_debug
+
+      # 3. GodotSharp assemblies that ship beside the templates.
+      - name: Build .NET assemblies
+        run: python ./modules/mono/build_scripts/build_assemblies.py --godot-output-dir=./bin --godot-platform=windows
+
+      - name: Save Godot build cache
+        uses: ./.github/actions/godot-cache-save
+        with:
+          cache-name: racewars-windows-mono-templates
+        continue-on-error: true
+
+      - name: Prepare artifact
+        run: Remove-Item bin/* -Include *.exp,*.lib,*.pdb -Force -ErrorAction SilentlyContinue
+
+      - name: Upload templates
+        uses: ./.github/actions/upload-artifact
+        with:
+          name: racewars-windows-mono-templates
+
+      - name: Smoke test
+        run: |
+          ./bin/godot.windows.template_release.x86_64.mono.console.exe --version
+          ./bin/godot.windows.template_release.x86_64.mono.console.exe --headless --quit
