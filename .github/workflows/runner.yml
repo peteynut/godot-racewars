@@ -1,5 +1,8 @@
 name: 🔗 GHA
-on: [push, pull_request, merge_group, workflow_dispatch]
+# RaceWars fork: upstream's full CI matrix is dispatch-only here so fork pushes
+# don't fan out into dozens of platform jobs. Only racewars-templates.yml runs
+# automatically. Trigger the stock matrix by hand if ever needed.
+on: [workflow_dispatch]
 
 concurrency:
   group: ${{ github.workflow }}|${{ github.ref_name }}
