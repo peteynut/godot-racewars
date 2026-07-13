@@ -102,6 +102,10 @@ public:
 		SCALING_3D_MODE_FSR2,
 		SCALING_3D_MODE_METALFX_SPATIAL,
 		SCALING_3D_MODE_METALFX_TEMPORAL,
+		// RaceWars fork: proprietary temporal upscalers provided by the Windows
+		// D3D12 export templates only (see UPSCALING.md). Absent on stock engines.
+		SCALING_3D_MODE_DLSS,
+		SCALING_3D_MODE_FSR3,
 		SCALING_3D_MODE_MAX
 	};
 

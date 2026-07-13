@@ -573,7 +573,15 @@
 			More information: [url=https://developer.apple.com/documentation/metalfx]MetalFX[/url].
 			[b]Note:[/b] Only supported when the Metal rendering driver is in use, which limits this scaling mode to macOS and iOS.
 		</constant>
-		<constant name="SCALING_3D_MODE_MAX" value="5" enum="Scaling3DMode">
+		<constant name="SCALING_3D_MODE_DLSS" value="5" enum="Scaling3DMode">
+			Use NVIDIA DLSS (Deep Learning Super Sampling) temporal upscaling for the viewport's 3D buffer. The amount of scaling can be set using [member scaling_3d_scale]; a value of [code]1.0[/code] runs DLSS at native resolution (DLAA).
+			[b]Note:[/b] Only available in engine builds whose rendering device advertises this upscaler (the RaceWars Windows D3D12 export templates). On any other build this mode falls back to [constant SCALING_3D_MODE_FSR2].
+		</constant>
+		<constant name="SCALING_3D_MODE_FSR3" value="6" enum="Scaling3DMode">
+			Use AMD FSR 3 / FSR 4 temporal upscaling for the viewport's 3D buffer. The amount of scaling can be set using [member scaling_3d_scale].
+			[b]Note:[/b] Only available in engine builds whose rendering device advertises this upscaler (the RaceWars Windows D3D12 export templates). On any other build this mode falls back to [constant SCALING_3D_MODE_FSR2].
+		</constant>
+		<constant name="SCALING_3D_MODE_MAX" value="7" enum="Scaling3DMode">
 			Represents the size of the [enum Scaling3DMode] enum.
 		</constant>
 		<constant name="MSAA_DISABLED" value="0" enum="MSAA">

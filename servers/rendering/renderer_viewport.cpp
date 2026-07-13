@@ -152,6 +152,23 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 				WARN_PRINT_ONCE("MetalFX and FSR upscaling are not supported in the Compatibility renderer. Falling back to bilinear scaling.");
 			}
 
+			// RaceWars fork: DLSS and FSR 3/4 are provided only by the Windows D3D12
+			// export templates. Any engine/driver that doesn't advertise them - which
+			// includes every SDK-free build - degrades to FSR 2, the closest temporal
+			// upscaler, exactly as the MetalFX paths below fall back. (The gl_compatibility
+			// guard above already rewrote these to bilinear, so RD is valid here.)
+			if (scaling_3d_mode == RS::VIEWPORT_SCALING_3D_MODE_DLSS && !RD::get_singleton()->has_feature(RD::SUPPORTS_DLSS)) {
+				scaling_3d_mode = RS::VIEWPORT_SCALING_3D_MODE_FSR2;
+				scaling_type = RS::scaling_3d_mode_type(scaling_3d_mode);
+				WARN_PRINT_ONCE("NVIDIA DLSS is not available in this engine build. Falling back to FSR 2 scaling.");
+			}
+
+			if (scaling_3d_mode == RS::VIEWPORT_SCALING_3D_MODE_FSR3 && !RD::get_singleton()->has_feature(RD::SUPPORTS_FSR3_UPSCALER)) {
+				scaling_3d_mode = RS::VIEWPORT_SCALING_3D_MODE_FSR2;
+				scaling_type = RS::scaling_3d_mode_type(scaling_3d_mode);
+				WARN_PRINT_ONCE("AMD FSR 3/4 is not available in this engine build. Falling back to FSR 2 scaling.");
+			}
+
 			if (scaling_3d_mode == RS::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL && !RD::get_singleton()->has_feature(RD::SUPPORTS_METALFX_TEMPORAL)) {
 				if (RD::get_singleton()->has_feature(RD::SUPPORTS_METALFX_SPATIAL)) {
 					// Prefer MetalFX spatial if it is supported, which will be much more efficient than FSR2,
@@ -229,6 +246,11 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 				case RS::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL:
 				case RS::VIEWPORT_SCALING_3D_MODE_FSR:
 				case RS::VIEWPORT_SCALING_3D_MODE_FSR2:
+				// RaceWars fork: DLSS/FSR3 reconstruct from a below-native render into a
+				// target-size buffer, identical sizing to FSR2. (Unsupported builds have
+				// already remapped these to FSR2 above; reachable once the SDK wrappers land.)
+				case RS::VIEWPORT_SCALING_3D_MODE_DLSS:
+				case RS::VIEWPORT_SCALING_3D_MODE_FSR3:
 					target_width = p_viewport->size.width;
 					target_height = p_viewport->size.height;
 					render_width = MAX(target_width * scaling_3d_scale, 1.0); // target_width / (target_width * scaling)
