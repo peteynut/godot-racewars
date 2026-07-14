@@ -74,6 +74,51 @@ struct NgxState {
 
 NgxState ngx;
 
+// Phase 3 hardware-tuning knobs (read once at startup, set before launch).
+// SDK sign/flag conventions can only be settled by A/B on real GPUs; once the
+// right combination is confirmed these become the defaults and the knobs go.
+//   RW_DLSS_JITTER_SIGN_X / _Y  = -1   flip the jitter offset sign per axis
+//   RW_DLSS_MV_SIGN_X / _Y      = -1   flip the motion-vector scale per axis
+//   RW_DLSS_MV_JITTERED         = 1    tell DLSS the MVs contain jitter
+//                                      (Godot computes velocity from jittered
+//                                      matrices, so this may well be correct)
+//   RW_DLSS_NO_AUTOEXPOSURE     = 1    drop the AutoExposure create flag
+struct DlssKnobs {
+	float jitter_sign_x = 1.0f;
+	float jitter_sign_y = 1.0f;
+	float mv_sign_x = 1.0f;
+	float mv_sign_y = 1.0f;
+	bool mv_jittered = false;
+	bool no_autoexposure = false;
+	bool loaded = false;
+};
+
+DlssKnobs knobs;
+
+float _knob_sign(const String &p_env) {
+	String v = OS::get_singleton()->get_environment(p_env);
+	return (v == "-1") ? -1.0f : 1.0f;
+}
+
+const DlssKnobs &_dlss_knobs() {
+	if (!knobs.loaded) {
+		OS *os = OS::get_singleton();
+		knobs.jitter_sign_x = _knob_sign("RW_DLSS_JITTER_SIGN_X");
+		knobs.jitter_sign_y = _knob_sign("RW_DLSS_JITTER_SIGN_Y");
+		knobs.mv_sign_x = _knob_sign("RW_DLSS_MV_SIGN_X");
+		knobs.mv_sign_y = _knob_sign("RW_DLSS_MV_SIGN_Y");
+		knobs.mv_jittered = os->get_environment("RW_DLSS_MV_JITTERED") == "1";
+		knobs.no_autoexposure = os->get_environment("RW_DLSS_NO_AUTOEXPOSURE") == "1";
+		if (knobs.jitter_sign_x < 0 || knobs.jitter_sign_y < 0 || knobs.mv_sign_x < 0 || knobs.mv_sign_y < 0 || knobs.mv_jittered || knobs.no_autoexposure) {
+			print_line(vformat("DLSS: tuning knobs active - jitter sign (%d,%d), MV sign (%d,%d), MV jittered %s, no auto-exposure %s.",
+					(int)knobs.jitter_sign_x, (int)knobs.jitter_sign_y, (int)knobs.mv_sign_x, (int)knobs.mv_sign_y,
+					knobs.mv_jittered ? "yes" : "no", knobs.no_autoexposure ? "yes" : "no"));
+		}
+		knobs.loaded = true;
+	}
+	return knobs;
+}
+
 const wchar_t *_ngx_data_path() {
 	if (ngx.data_path.length() == 0) {
 		String dir = OS::get_singleton()->get_user_data_dir();
@@ -283,11 +328,14 @@ void DlssNgxEffect::callback(RDD *p_driver, RDD::CommandBufferID p_command_buffe
 		create_params.Feature.InTargetHeight = (unsigned int)ctx->target_size.height;
 		create_params.Feature.InPerfQualityValue = _ngx_quality_for_ratio(ratio);
 		// Godot conventions (same as its FSR2/MetalFX integrations): linear
-		// HDR color, reverse-Z depth, render-resolution unjittered MVs.
+		// HDR color, reverse-Z depth, render-resolution MVs.
 		create_params.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR |
 				NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
 				NVSDK_NGX_DLSS_Feature_Flags_DepthInverted;
-		if (!ctx->has_exposure) {
+		if (_dlss_knobs().mv_jittered) {
+			create_params.InFeatureCreateFlags |= NVSDK_NGX_DLSS_Feature_Flags_MVJittered;
+		}
+		if (!ctx->has_exposure && !_dlss_knobs().no_autoexposure) {
 			create_params.InFeatureCreateFlags |= NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
 		}
 
@@ -309,16 +357,17 @@ void DlssNgxEffect::callback(RDD *p_driver, RDD::CommandBufferID p_command_buffe
 	eval.pInDepth = (ID3D12Resource *)p_userdata->depth;
 	eval.pInMotionVectors = (ID3D12Resource *)p_userdata->velocity;
 	eval.pInExposureTexture = (ID3D12Resource *)p_userdata->exposure;
-	eval.InJitterOffsetX = p_userdata->jitter.x;
-	eval.InJitterOffsetY = p_userdata->jitter.y;
+	const DlssKnobs &k = _dlss_knobs();
+	eval.InJitterOffsetX = p_userdata->jitter.x * k.jitter_sign_x;
+	eval.InJitterOffsetY = p_userdata->jitter.y * k.jitter_sign_y;
 	eval.InRenderSubrectDimensions.Width = (unsigned int)p_userdata->internal_size.width;
 	eval.InRenderSubrectDimensions.Height = (unsigned int)p_userdata->internal_size.height;
 	eval.InReset = p_userdata->reset ? 1 : 0;
 	// Godot's velocity buffer stores UV-space motion toward the previous
 	// frame; scale by the render size to get pixel-space motion (the exact
 	// scale Godot hands its FSR2/MetalFX integrations).
-	eval.InMVScaleX = float(p_userdata->internal_size.width);
-	eval.InMVScaleY = float(p_userdata->internal_size.height);
+	eval.InMVScaleX = float(p_userdata->internal_size.width) * k.mv_sign_x;
+	eval.InMVScaleY = float(p_userdata->internal_size.height) * k.mv_sign_y;
 	eval.InPreExposure = 1.0f;
 	eval.InFrameTimeDeltaInMsec = p_userdata->delta_time_ms;
 

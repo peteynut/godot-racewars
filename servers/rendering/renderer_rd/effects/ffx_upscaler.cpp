@@ -33,6 +33,7 @@
 #include "ffx_upscaler.h"
 
 #include "core/os/mutex.h"
+#include "core/os/os.h"
 #include "core/string/print_string.h"
 
 #include "drivers/d3d12/rendering_device_driver_d3d12.h"
@@ -83,9 +84,17 @@ FfxLib &_ffx_ensure_loaded() {
 	ffx_lib.module = LoadLibraryExW(L"amd_fidelityfx_loader_dx12.dll", nullptr,
 			LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
 	if (ffx_lib.module == nullptr) {
-		print_verbose("FFX upscaler: amd_fidelityfx_loader_dx12.dll not found; FSR 3/4 unavailable.");
+		DWORD err = GetLastError();
+		if (err == ERROR_MOD_NOT_FOUND) {
+			// DLL simply not shipped - the normal case on installs without it.
+			print_verbose("FFX upscaler: amd_fidelityfx_loader_dx12.dll not found; FSR 3/4 unavailable.");
+		} else {
+			// Present but unloadable - always worth a visible line.
+			print_line(vformat("FFX upscaler: amd_fidelityfx_loader_dx12.dll failed to load (Win32 error %d); FSR 3/4 unavailable.", (uint64_t)err));
+		}
 		return ffx_lib;
 	}
+	print_verbose("FFX upscaler: loader DLL loaded.");
 
 	ffx_lib.create_context = (PfnFfxCreateContext)(void *)GetProcAddress(ffx_lib.module, "ffxCreateContext");
 	ffx_lib.destroy_context = (PfnFfxDestroyContext)(void *)GetProcAddress(ffx_lib.module, "ffxDestroyContext");
@@ -94,11 +103,40 @@ FfxLib &_ffx_ensure_loaded() {
 	ffx_lib.dispatch = (PfnFfxDispatch)(void *)GetProcAddress(ffx_lib.module, "ffxDispatch");
 
 	if (!ffx_lib.create_context || !ffx_lib.destroy_context || !ffx_lib.query || !ffx_lib.dispatch) {
-		print_verbose("FFX upscaler: loader DLL is missing entry points; FSR 3/4 unavailable.");
+		print_line("FFX upscaler: loader DLL is missing entry points; FSR 3/4 unavailable.");
 		ffx_lib = FfxLib();
 		ffx_lib.tried = true;
 	}
 	return ffx_lib;
+}
+
+// Phase 3 hardware-tuning knobs, mirroring the DLSS ones (see dlss_ngx.cpp):
+//   RW_FSR3_JITTER_SIGN_X / _Y = -1   flip the jitter offset sign per axis
+//   RW_FSR3_MV_SIGN_X / _Y     = -1   flip the motion-vector scale per axis
+struct FfxKnobs {
+	float jitter_sign_x = 1.0f;
+	float jitter_sign_y = 1.0f;
+	float mv_sign_x = 1.0f;
+	float mv_sign_y = 1.0f;
+	bool loaded = false;
+};
+
+FfxKnobs ffx_knobs;
+
+const FfxKnobs &_ffx_get_knobs() {
+	if (!ffx_knobs.loaded) {
+		OS *os = OS::get_singleton();
+		ffx_knobs.jitter_sign_x = (os->get_environment("RW_FSR3_JITTER_SIGN_X") == "-1") ? -1.0f : 1.0f;
+		ffx_knobs.jitter_sign_y = (os->get_environment("RW_FSR3_JITTER_SIGN_Y") == "-1") ? -1.0f : 1.0f;
+		ffx_knobs.mv_sign_x = (os->get_environment("RW_FSR3_MV_SIGN_X") == "-1") ? -1.0f : 1.0f;
+		ffx_knobs.mv_sign_y = (os->get_environment("RW_FSR3_MV_SIGN_Y") == "-1") ? -1.0f : 1.0f;
+		if (ffx_knobs.jitter_sign_x < 0 || ffx_knobs.jitter_sign_y < 0 || ffx_knobs.mv_sign_x < 0 || ffx_knobs.mv_sign_y < 0) {
+			print_line(vformat("FFX upscaler: tuning knobs active - jitter sign (%d,%d), MV sign (%d,%d).",
+					(int)ffx_knobs.jitter_sign_x, (int)ffx_knobs.jitter_sign_y, (int)ffx_knobs.mv_sign_x, (int)ffx_knobs.mv_sign_y));
+		}
+		ffx_knobs.loaded = true;
+	}
+	return ffx_knobs;
 }
 
 void _ffx_message(uint32_t p_type, const wchar_t *p_message) {
@@ -107,6 +145,40 @@ void _ffx_message(uint32_t p_type, const wchar_t *p_message) {
 	} else {
 		WARN_PRINT(vformat("FFX upscaler: %s", String(p_message)));
 	}
+}
+
+// Shared by the availability probe (trial context) and real context creation.
+ffxReturnCode_t _ffx_create_raw(ID3D12Device *p_device, Size2i p_internal_size, Size2i p_target_size, ffxContext *r_context) {
+	// Same conventions Godot's FSR2 integration declares: linear HDR input,
+	// reverse-Z depth. MVs are low-res (no display-res flag needed).
+	ffxCreateContextDescUpscale desc = {};
+	desc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+	desc.flags = FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_DEPTH_INVERTED;
+	desc.maxRenderSize = { (uint32_t)p_internal_size.width, (uint32_t)p_internal_size.height };
+	desc.maxUpscaleSize = { (uint32_t)p_target_size.width, (uint32_t)p_target_size.height };
+	desc.fpMessage = _ffx_message;
+
+	ffxCreateBackendDX12Desc backend = {};
+	backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
+	backend.device = p_device;
+	desc.header.pNext = &backend.header;
+
+	// Declare which API revision these structs were compiled against.
+	ffxCreateContextDescUpscaleVersion api_version = {};
+	api_version.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION;
+	api_version.version = FFX_UPSCALER_VERSION;
+	backend.header.pNext = &api_version.header;
+
+	return ffx_lib.create_context(r_context, &desc.header, nullptr);
+}
+
+String _ffx_provider_name(ffxContext p_context) {
+	ffxQueryGetProviderVersion provider = {};
+	provider.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
+	if (ffx_lib.query(&p_context, &provider.header) == FFX_API_RETURN_OK && provider.versionName != nullptr) {
+		return String(provider.versionName);
+	}
+	return "unknown";
 }
 
 } // namespace
@@ -141,16 +213,27 @@ bool FfxUpscalerEffect::is_available(void *p_d3d12_device) {
 		return false;
 	}
 
-	uint64_t count = 0;
-	ffxQueryDescGetVersions versions = {};
-	versions.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
-	versions.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
-	versions.device = p_d3d12_device;
-	versions.outputCount = &count;
-	if (lib.query(nullptr, &versions.header) != FFX_API_RETURN_OK) {
+	// Ground-truth probe: create (and immediately destroy) a small trial
+	// context. This exercises the loader's provider selection for real -
+	// version-count queries proved unreliable as a gate. One-time; the
+	// result is cached by the driver's has_feature caller pattern (the
+	// catalog only asks once) and the cost is trivial.
+	static int cached = -1;
+	if (cached != -1) {
+		return cached == 1;
+	}
+
+	ffxContext trial = nullptr;
+	ffxReturnCode_t rc = _ffx_create_raw((ID3D12Device *)p_d3d12_device, Size2i(640, 360), Size2i(1280, 720), &trial);
+	if (rc != FFX_API_RETURN_OK || trial == nullptr) {
+		print_line(vformat("FFX upscaler: no upscale provider for this device (ffxCreateContext rc %d); FSR 3/4 unavailable.", (int)rc));
+		cached = 0;
 		return false;
 	}
-	return count > 0;
+	print_line(vformat("FFX upscaler: available, provider '%s'.", _ffx_provider_name(trial)));
+	lib.destroy_context(&trial, nullptr);
+	cached = 1;
+	return true;
 }
 
 FfxUpscalerContext *FfxUpscalerEffect::create_context(Size2i p_internal_size, Size2i p_target_size) {
@@ -160,37 +243,13 @@ FfxUpscalerContext *FfxUpscalerEffect::create_context(Size2i p_internal_size, Si
 	ID3D12Device *device = (ID3D12Device *)RD::get_singleton()->get_driver_resource(RD::DRIVER_RESOURCE_LOGICAL_DEVICE, RID());
 	ERR_FAIL_NULL_V(device, nullptr);
 
-	// Same conventions Godot's FSR2 integration declares: linear HDR input,
-	// reverse-Z depth. MVs are low-res and unjittered (no flags needed).
-	ffxCreateContextDescUpscale desc = {};
-	desc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
-	desc.flags = FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_DEPTH_INVERTED;
-	desc.maxRenderSize = { (uint32_t)p_internal_size.width, (uint32_t)p_internal_size.height };
-	desc.maxUpscaleSize = { (uint32_t)p_target_size.width, (uint32_t)p_target_size.height };
-	desc.fpMessage = _ffx_message;
-
-	ffxCreateBackendDX12Desc backend = {};
-	backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
-	backend.device = device;
-	desc.header.pNext = &backend.header;
-
-	// Declare which API revision these structs were compiled against.
-	ffxCreateContextDescUpscaleVersion api_version = {};
-	api_version.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION;
-	api_version.version = FFX_UPSCALER_VERSION;
-	backend.header.pNext = &api_version.header;
-
 	ffxContext ffx_context = nullptr;
-	ffxReturnCode_t rc = lib.create_context(&ffx_context, &desc.header, nullptr);
-	ERR_FAIL_COND_V_MSG(rc != FFX_API_RETURN_OK, nullptr, vformat("FFX upscaler: ffxCreateContext failed (%d).", (int)rc));
+	ffxReturnCode_t rc = _ffx_create_raw(device, p_internal_size, p_target_size, &ffx_context);
+	ERR_FAIL_COND_V_MSG(rc != FFX_API_RETURN_OK || ffx_context == nullptr, nullptr, vformat("FFX upscaler: ffxCreateContext failed (%d).", (int)rc));
 
 	// Which provider did we actually get? RDNA3/4 resolve to FSR 4.x, other
 	// GPUs to FSR 3.1.x - worth surfacing in the logs.
-	ffxQueryGetProviderVersion provider = {};
-	provider.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
-	if (lib.query(&ffx_context, &provider.header) == FFX_API_RETURN_OK && provider.versionName != nullptr) {
-		print_line(vformat("FFX upscaler: using provider '%s'.", String(provider.versionName)));
-	}
+	print_line(vformat("FFX upscaler: using provider '%s'.", _ffx_provider_name(ffx_context)));
 
 	FfxUpscalerContext *context = memnew(FfxUpscalerContext);
 	context->ffx_context = ffx_context;
@@ -261,8 +320,9 @@ void FfxUpscalerEffect::callback(RDD *p_driver, RDD::CommandBufferID p_command_b
 	// consume (they'd read the R channel). Optional inputs; quality item
 	// for Phase 3.
 	dispatch.output = ffxApiGetResourceDX12((ID3D12Resource *)p_userdata->output, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
-	dispatch.jitterOffset = { p_userdata->jitter.x, p_userdata->jitter.y };
-	dispatch.motionVectorScale = { float(p_userdata->internal_size.width), float(p_userdata->internal_size.height) };
+	const FfxKnobs &k = _ffx_get_knobs();
+	dispatch.jitterOffset = { p_userdata->jitter.x * k.jitter_sign_x, p_userdata->jitter.y * k.jitter_sign_y };
+	dispatch.motionVectorScale = { float(p_userdata->internal_size.width) * k.mv_sign_x, float(p_userdata->internal_size.height) * k.mv_sign_y };
 	dispatch.renderSize = { (uint32_t)p_userdata->internal_size.width, (uint32_t)p_userdata->internal_size.height };
 	dispatch.upscaleSize = { (uint32_t)p_userdata->target_size.width, (uint32_t)p_userdata->target_size.height };
 	dispatch.enableSharpening = p_userdata->sharpness > 1e-6f;
