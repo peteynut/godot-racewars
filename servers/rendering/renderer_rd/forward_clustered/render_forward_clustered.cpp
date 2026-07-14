@@ -88,6 +88,33 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_fsr2(Rende
 	}
 }
 
+// RaceWars fork: proprietary upscaler contexts, created on first use like
+// ensure_mfx_temporal. The `true` return doubles as the accumulation reset.
+#ifdef DLSS_D3D12_ENABLED
+bool RenderForwardClustered::RenderBufferDataForwardClustered::ensure_dlss(RendererRD::DlssNgxEffect *p_effect, bool p_has_exposure) {
+	if (dlss_context != nullptr && dlss_context->has_exposure != p_has_exposure) {
+		// Exposure mode is baked into the NGX feature; recreate.
+		memdelete(dlss_context);
+		dlss_context = nullptr;
+	}
+	if (dlss_context == nullptr) {
+		dlss_context = p_effect->create_context(render_buffers->get_internal_size(), render_buffers->get_target_size(), p_has_exposure);
+		return true;
+	}
+	return false;
+}
+#endif
+
+#ifdef FFX_UPSCALER_D3D12_ENABLED
+bool RenderForwardClustered::RenderBufferDataForwardClustered::ensure_ffx_upscaler(RendererRD::FfxUpscalerEffect *p_effect) {
+	if (ffx_upscaler_context == nullptr) {
+		ffx_upscaler_context = p_effect->create_context(render_buffers->get_internal_size(), render_buffers->get_target_size());
+		return true;
+	}
+	return false;
+}
+#endif
+
 #ifdef METAL_MFXTEMPORAL_ENABLED
 bool RenderForwardClustered::RenderBufferDataForwardClustered::ensure_mfx_temporal(RendererRD::MFXTemporalEffect *p_effect) {
 	if (mfx_temporal_context == nullptr) {
@@ -131,6 +158,20 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 	if (mfx_temporal_context) {
 		memdelete(mfx_temporal_context);
 		mfx_temporal_context = nullptr;
+	}
+#endif
+
+#ifdef DLSS_D3D12_ENABLED
+	if (dlss_context) {
+		memdelete(dlss_context);
+		dlss_context = nullptr;
+	}
+#endif
+
+#ifdef FFX_UPSCALER_D3D12_ENABLED
+	if (ffx_upscaler_context) {
+		memdelete(ffx_upscaler_context);
+		ffx_upscaler_context = nullptr;
 	}
 #endif
 
@@ -1752,6 +1793,8 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		SCALE_NONE,
 		SCALE_FSR2,
 		SCALE_MFX,
+		SCALE_DLSS,
+		SCALE_FSR3,
 	} scale_type = SCALE_NONE;
 
 	switch (rb->get_scaling_3d_mode()) {
@@ -1761,6 +1804,22 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		case RS::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL:
 #ifdef METAL_MFXTEMPORAL_ENABLED
 			scale_type = SCALE_MFX;
+#else
+			scale_type = SCALE_NONE;
+#endif
+			break;
+		// RaceWars fork: only reachable when the D3D12 driver advertised the
+		// feature (renderer_viewport remaps these to FSR2 otherwise).
+		case RS::VIEWPORT_SCALING_3D_MODE_DLSS:
+#ifdef DLSS_D3D12_ENABLED
+			scale_type = SCALE_DLSS;
+#else
+			scale_type = SCALE_NONE;
+#endif
+			break;
+		case RS::VIEWPORT_SCALING_3D_MODE_FSR3:
+#ifdef FFX_UPSCALER_D3D12_ENABLED
+			scale_type = SCALE_FSR3;
 #else
 			scale_type = SCALE_NONE;
 #endif
@@ -2469,6 +2528,78 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			}
 
 			RD::get_singleton()->draw_command_end_label();
+#ifdef DLSS_D3D12_ENABLED
+		} else if (scale_type == SCALE_DLSS) {
+			// RaceWars fork: NVIDIA DLSS / DLAA. Mirrors the FSR2 block above;
+			// same inputs, same jitter/motion conventions.
+			RID exposure;
+			if (RSG::camera_attributes->camera_attributes_uses_auto_exposure(p_render_data->camera_attributes)) {
+				exposure = luminance->get_current_luminance_buffer(rb);
+			}
+
+			bool reset = rb_data->ensure_dlss(dlss_effect, exposure.is_valid());
+
+			RD::get_singleton()->draw_command_begin_label("DLSS");
+			RENDER_TIMESTAMP("DLSS");
+
+			for (uint32_t v = 0; v < rb->get_view_count(); v++) {
+				RendererRD::DlssNgxEffect::Parameters params;
+				params.context = rb_data->get_dlss_context();
+				params.internal_size = rb->get_internal_size();
+				params.color = rb->get_internal_texture(v);
+				params.depth = rb->get_depth_texture(v);
+				params.velocity = rb->get_velocity_buffer(false, v);
+				params.exposure = exposure;
+				params.output = rb->get_upscaled_texture(v);
+				params.jitter = p_render_data->scene_data->taa_jitter * Vector2(rb->get_internal_size()) * 0.5f;
+				params.delta_time = float(time_step);
+				params.reset_accumulation = reset;
+
+				dlss_effect->upscale(params);
+			}
+
+			RD::get_singleton()->draw_command_end_label();
+#endif
+#ifdef FFX_UPSCALER_D3D12_ENABLED
+		} else if (scale_type == SCALE_FSR3) {
+			// RaceWars fork: AMD FSR 3.1 / FSR 4 via ffx-api. Mirrors the FSR2
+			// block above; same inputs, same jitter/motion conventions.
+			RID exposure;
+			if (RSG::camera_attributes->camera_attributes_uses_auto_exposure(p_render_data->camera_attributes)) {
+				exposure = luminance->get_current_luminance_buffer(rb);
+			}
+
+			bool reset = rb_data->ensure_ffx_upscaler(ffx_upscaler_effect);
+
+			RD::get_singleton()->draw_command_begin_label("FSR3");
+			RENDER_TIMESTAMP("FSR3");
+
+			for (uint32_t v = 0; v < rb->get_view_count(); v++) {
+				real_t fov = p_render_data->scene_data->cam_projection.get_fov();
+				real_t aspect = p_render_data->scene_data->cam_projection.get_aspect();
+				real_t fovy = p_render_data->scene_data->cam_projection.get_fovy(fov, 1.0 / aspect);
+
+				RendererRD::FfxUpscalerEffect::Parameters params;
+				params.context = rb_data->get_ffx_upscaler_context();
+				params.internal_size = rb->get_internal_size();
+				params.sharpness = CLAMP(1.0f - (rb->get_fsr_sharpness() / 2.0f), 0.0f, 1.0f);
+				params.color = rb->get_internal_texture(v);
+				params.depth = rb->get_depth_texture(v);
+				params.velocity = rb->get_velocity_buffer(false, v);
+				params.exposure = exposure;
+				params.output = rb->get_upscaled_texture(v);
+				params.z_near = p_render_data->scene_data->z_near;
+				params.z_far = p_render_data->scene_data->z_far;
+				params.fovy = fovy;
+				params.jitter = p_render_data->scene_data->taa_jitter * Vector2(rb->get_internal_size()) * 0.5f;
+				params.delta_time = float(time_step);
+				params.reset_accumulation = reset;
+
+				ffx_upscaler_effect->upscale(params);
+			}
+
+			RD::get_singleton()->draw_command_end_label();
+#endif
 		} else if (scale_type == SCALE_MFX) {
 #ifdef METAL_MFXTEMPORAL_ENABLED
 			bool reset = rb_data->ensure_mfx_temporal(mfx_temporal_effect);
@@ -5131,6 +5262,14 @@ RenderForwardClustered::RenderForwardClustered() {
 	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
 	mfx_temporal_effect = memnew(RendererRD::MFXTemporalEffect);
 #endif
+	// RaceWars fork: cheap holders; the SDKs initialize lazily on first
+	// has_feature probe / first upscale, never here.
+#ifdef DLSS_D3D12_ENABLED
+	dlss_effect = memnew(RendererRD::DlssNgxEffect);
+#endif
+#ifdef FFX_UPSCALER_D3D12_ENABLED
+	ffx_upscaler_effect = memnew(RendererRD::FfxUpscalerEffect);
+#endif
 }
 
 RenderForwardClustered::~RenderForwardClustered() {
@@ -5148,6 +5287,20 @@ RenderForwardClustered::~RenderForwardClustered() {
 		memdelete(fsr2_effect);
 		fsr2_effect = nullptr;
 	}
+
+#ifdef DLSS_D3D12_ENABLED
+	if (dlss_effect) {
+		memdelete(dlss_effect);
+		dlss_effect = nullptr;
+	}
+#endif
+
+#ifdef FFX_UPSCALER_D3D12_ENABLED
+	if (ffx_upscaler_effect) {
+		memdelete(ffx_upscaler_effect);
+		ffx_upscaler_effect = nullptr;
+	}
+#endif
 
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	if (mfx_temporal_effect) {

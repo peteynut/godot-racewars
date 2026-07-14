@@ -2,9 +2,10 @@
 # the DLSS / FSR 3-4 upscalers. This is the only workflow the fork needs; the
 # stock upstream workflows can be removed on the fork to save CI minutes.
 #
-# Phase 1 note: the templates this produces are functionally identical to stock
-# Godot 4.6.3 (the new upscalers report unsupported until the Phase 2 SDK
-# wrappers land) - this workflow exists so the pipeline is proven and ready.
+# Phase 2: dlss=yes ffx_upscaler=yes compile the NGX + ffx-api wrappers in.
+# The NGX headers/lib come from NVIDIA's public DLSS SDK repo, fetched below
+# (never committed). Runtime DLLs (nvngx_dlss.dll + AMD's signed DLLs) ship
+# beside the exe via export.sh - Phase 4.
 name: 🏎 RaceWars Windows Templates
 on:
   workflow_dispatch:
@@ -12,11 +13,17 @@ on:
     branches: [racewars-upscalers]
 
 env:
+  # Commit of github.com/NVIDIA/DLSS the wrappers were written against
+  # (v310.7.0 line). Bump deliberately.
+  DLSS_SDK_COMMIT: a291cc7d2cc642a51566f3dfd5376f635cd1b284
   SCONS_FLAGS: >-
     production=yes
     debug_symbols=no
     module_mono_enabled=yes
     module_text_server_fb_enabled=yes
+    dlss=yes
+    ffx_upscaler=yes
+    "dlss_sdk_path=${{ github.workspace }}/dlss_sdk/"
     "angle_libs=${{ github.workspace }}/"
     "accesskit_sdk_path=${{ github.workspace }}/accesskit-c-0.21.2/"
   SCONS_CACHE_MSVC_CONFIG: true
@@ -43,6 +50,18 @@ jobs:
 
       - name: Setup Python and SCons
         uses: ./.github/actions/godot-deps
+
+      # NGX headers + static lib for the DLSS wrapper (public repo, no NDA;
+      # proprietary license forbids vendoring it into this repo).
+      - name: Fetch NVIDIA DLSS SDK
+        shell: pwsh
+        run: |
+          git init dlss_sdk
+          cd dlss_sdk
+          git remote add origin https://github.com/NVIDIA/DLSS.git
+          git fetch --depth 1 origin $env:DLSS_SDK_COMMIT
+          git checkout FETCH_HEAD
+          if (!(Test-Path include/nvsdk_ngx.h)) { throw "DLSS SDK layout unexpected" }
 
       - name: Download Direct3D 12 SDK components
         shell: sh

@@ -40,6 +40,14 @@
 #include "d3d12_godot_nir_bridge.h"
 #include "rendering_context_driver_d3d12.h"
 
+// RaceWars fork: availability probes for the proprietary upscalers.
+#ifdef DLSS_D3D12_ENABLED
+#include "servers/rendering/renderer_rd/effects/dlss_ngx.h"
+#endif
+#ifdef FFX_UPSCALER_D3D12_ENABLED
+#include "servers/rendering/renderer_rd/effects/ffx_upscaler.h"
+#endif
+
 GODOT_GCC_WARNING_PUSH
 GODOT_GCC_WARNING_IGNORE("-Wimplicit-fallthrough")
 GODOT_GCC_WARNING_IGNORE("-Wlogical-not-parentheses")
@@ -5777,10 +5785,41 @@ uint64_t RenderingDeviceDriverD3D12::api_trait_get(ApiTrait p_trait) {
 	}
 }
 
+#if defined(DLSS_D3D12_ENABLED) || defined(FFX_UPSCALER_D3D12_ENABLED)
+// RaceWars fork: native command-list access for the upscaler wrappers.
+ID3D12GraphicsCommandList *RenderingDeviceDriverD3D12::command_buffer_get_native_list(CommandBufferID p_cmd_buffer) const {
+	const CommandBufferInfo *cmd_buf_info = (const CommandBufferInfo *)p_cmd_buffer.id;
+	return cmd_buf_info->cmd_list.Get();
+}
+
+void RenderingDeviceDriverD3D12::command_buffer_mark_external_commands(CommandBufferID p_cmd_buffer) {
+	CommandBufferInfo *cmd_buf_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	// Heaps are re-set lazily by _command_check_descriptor_sets; the PSO and
+	// root-signature caches must be dropped so the next bind re-applies.
+	cmd_buf_info->descriptor_heaps_set = false;
+	cmd_buf_info->graphics_pso = nullptr;
+	cmd_buf_info->compute_pso = nullptr;
+	cmd_buf_info->graphics_root_signature_crc = 0;
+	cmd_buf_info->compute_root_signature_crc = 0;
+}
+#endif
+
 bool RenderingDeviceDriverD3D12::has_feature(Features p_feature) {
 	switch (p_feature) {
 		case SUPPORTS_HALF_FLOAT:
 			return shader_capabilities.native_16bit_ops;
+#ifdef DLSS_D3D12_ENABLED
+		// RaceWars fork: full NGX probe (adapter/driver requirements + init +
+		// SuperSampling.Available); the result is cached inside the wrapper.
+		case SUPPORTS_DLSS:
+			return RendererRD::DlssNgxEffect::is_available(device.Get(), adapter.Get());
+#endif
+#ifdef FFX_UPSCALER_D3D12_ENABLED
+		// RaceWars fork: loads AMD's signed loader DLL (if shipped beside the
+		// exe) and asks it for an upscale provider for this device.
+		case SUPPORTS_FSR3_UPSCALER:
+			return RendererRD::FfxUpscalerEffect::is_available(device.Get());
+#endif
 		case SUPPORTS_FRAGMENT_SHADER_WITH_ONLY_SIDE_EFFECTS:
 			return true;
 		case SUPPORTS_BUFFER_DEVICE_ADDRESS:

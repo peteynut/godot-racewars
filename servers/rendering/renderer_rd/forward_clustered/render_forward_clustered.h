@@ -33,6 +33,8 @@
 #include "core/templates/paged_allocator.h"
 #include "servers/rendering/multi_uma_buffer.h"
 #include "servers/rendering/renderer_rd/cluster_builder_rd.h"
+#include "servers/rendering/renderer_rd/effects/dlss_ngx.h"
+#include "servers/rendering/renderer_rd/effects/ffx_upscaler.h"
 #include "servers/rendering/renderer_rd/effects/fsr2.h"
 #ifdef METAL_ENABLED
 #include "servers/rendering/renderer_rd/effects/metal_fx.h"
@@ -98,6 +100,13 @@ public:
 #ifdef METAL_MFXTEMPORAL_ENABLED
 		RendererRD::MFXTemporalContext *mfx_temporal_context = nullptr;
 #endif
+		// RaceWars fork: proprietary upscaler contexts (Windows D3D12 only).
+#ifdef DLSS_D3D12_ENABLED
+		RendererRD::DlssNgxContext *dlss_context = nullptr;
+#endif
+#ifdef FFX_UPSCALER_D3D12_ENABLED
+		RendererRD::FfxUpscalerContext *ffx_upscaler_context = nullptr;
+#endif
 
 	public:
 		ClusterBuilderRD *cluster_builder = nullptr;
@@ -147,6 +156,17 @@ public:
 #ifdef METAL_MFXTEMPORAL_ENABLED
 		bool ensure_mfx_temporal(RendererRD::MFXTemporalEffect *p_effect);
 		RendererRD::MFXTemporalContext *get_mfx_temporal_context() const { return mfx_temporal_context; }
+#endif
+
+		// RaceWars fork: like ensure_mfx_temporal, returns true when the
+		// context was (re)created, which doubles as the accumulation reset.
+#ifdef DLSS_D3D12_ENABLED
+		bool ensure_dlss(RendererRD::DlssNgxEffect *p_effect, bool p_has_exposure);
+		RendererRD::DlssNgxContext *get_dlss_context() const { return dlss_context; }
+#endif
+#ifdef FFX_UPSCALER_D3D12_ENABLED
+		bool ensure_ffx_upscaler(RendererRD::FfxUpscalerEffect *p_effect);
+		RendererRD::FfxUpscalerContext *get_ffx_upscaler_context() const { return ffx_upscaler_context; }
 #endif
 
 		RID get_color_only_fb();
@@ -739,6 +759,13 @@ private:
 
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	RendererRD::MFXTemporalEffect *mfx_temporal_effect = nullptr;
+#endif
+	// RaceWars fork: proprietary upscalers (Windows D3D12 only).
+#ifdef DLSS_D3D12_ENABLED
+	RendererRD::DlssNgxEffect *dlss_effect = nullptr;
+#endif
+#ifdef FFX_UPSCALER_D3D12_ENABLED
+	RendererRD::FfxUpscalerEffect *ffx_upscaler_effect = nullptr;
 #endif
 	RendererRD::MotionVectorsStore *motion_vectors_store = nullptr;
 

@@ -217,6 +217,14 @@ def get_opts():
             "Path to the PIX runtime distribution (optional for D3D12)",
             os.path.join(d3d12_deps_folder, "pix"),
         ),
+        # RaceWars fork: proprietary upscalers (see RACEWARS_FORK.md). MSVC + D3D12 only.
+        BoolVariable("dlss", "Enable NVIDIA DLSS/DLAA via NGX (requires dlss_sdk_path; MSVC + D3D12 only)", False),
+        (
+            "dlss_sdk_path",
+            "Path to a github.com/NVIDIA/DLSS checkout (defaults to the DLSS_SDK env var)",
+            os.getenv("DLSS_SDK", ""),
+        ),
+        BoolVariable("ffx_upscaler", "Enable AMD FSR 3.1/4 via the ffx-api signed DLLs (MSVC + D3D12 only)", False),
     ]
 
 
@@ -466,6 +474,36 @@ def configure_msvc(env: "SConsEnvironment"):
         else:
             env.Append(LIBPATH=[env["mesa_libs"] + "/bin"])
         LIBS += ["libNIR.windows." + env["arch"] + prebuilt_lib_extra_suffix]
+
+    # RaceWars fork: proprietary upscalers ride on the D3D12 backend.
+    if env["dlss"]:
+        if not env["d3d12"] or env["arch"] != "x86_64":
+            print_error("dlss=yes requires d3d12=yes and arch=x86_64.")
+            sys.exit(255)
+        dlss_sdk = env["dlss_sdk_path"]
+        if dlss_sdk == "" or not os.path.exists(os.path.join(dlss_sdk, "include", "nvsdk_ngx.h")):
+            print_error(
+                "dlss=yes needs dlss_sdk_path (or the DLSS_SDK env var) pointing at a github.com/NVIDIA/DLSS checkout."
+            )
+            sys.exit(255)
+        env.AppendUnique(CPPDEFINES=["DLSS_D3D12_ENABLED"])
+        env.Prepend(CPPPATH=[os.path.join(dlss_sdk, "include")])
+        env.Append(LIBPATH=[os.path.join(dlss_sdk, "lib", "Windows_x86_64", "x64")])
+        if env["debug_crt"]:
+            LIBS += ["nvsdk_ngx_d_dbg"]
+        elif env["use_static_cpp"]:
+            LIBS += ["nvsdk_ngx_s"]
+        else:
+            LIBS += ["nvsdk_ngx_d"]
+
+    if env["ffx_upscaler"]:
+        if not env["d3d12"] or env["arch"] != "x86_64":
+            print_error("ffx_upscaler=yes requires d3d12=yes and arch=x86_64.")
+            sys.exit(255)
+        # Headers only (thirdparty/amd_ffx_api, MIT); AMD's signed DLLs are
+        # loaded at runtime and never linked.
+        env.AppendUnique(CPPDEFINES=["FFX_UPSCALER_D3D12_ENABLED"])
+        env.Prepend(CPPPATH=["#thirdparty/amd_ffx_api"])
 
     if env["opengl3"]:
         env.AppendUnique(CPPDEFINES=["GLES3_ENABLED"])
@@ -828,6 +866,12 @@ def configure_mingw(env: "SConsEnvironment"):
 
     if env["sdl"]:
         env.Append(CPPDEFINES=["SDL_ENABLED"])
+
+    # RaceWars fork: the upscaler wrappers are MSVC-only (NGX ships MSVC
+    # static libs; the CI templates are MSVC).
+    if env["dlss"] or env["ffx_upscaler"]:
+        print_error("dlss=yes / ffx_upscaler=yes are not supported with MinGW; use MSVC.")
+        sys.exit(255)
 
     if env["d3d12"]:
         if env["use_llvm"]:
