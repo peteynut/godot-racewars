@@ -78,11 +78,15 @@ FfxLib &_ffx_ensure_loaded() {
 	}
 	ffx_lib.tried = true;
 
-	// The signed loader ships beside the exe; restrict the search to the
-	// application directory (and the DLL's own directory for its provider
-	// DLLs) so a planted DLL elsewhere can't be picked up.
-	ffx_lib.module = LoadLibraryExW(L"amd_fidelityfx_loader_dx12.dll", nullptr,
-			LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
+	// The signed loader ships beside the exe. LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+	// requires a fully-qualified path (a bare name returns ERROR_INVALID_PARAMETER
+	// / 87), so build the absolute path from the executable's directory; that
+	// flag then also lets the loader resolve its sibling provider DLL from the
+	// same folder, and DEFAULT_DIRS covers the CRT/system deps.
+	String loader_path = OS::get_singleton()->get_executable_path().get_base_dir().path_join("amd_fidelityfx_loader_dx12.dll").replace("/", "\\");
+	Char16String loader_w = loader_path.utf16();
+	ffx_lib.module = LoadLibraryExW((LPCWSTR)loader_w.get_data(), nullptr,
+			LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
 	if (ffx_lib.module == nullptr) {
 		DWORD err = GetLastError();
 		if (err == ERROR_MOD_NOT_FOUND) {
