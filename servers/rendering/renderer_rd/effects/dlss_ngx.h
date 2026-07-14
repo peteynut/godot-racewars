@@ -57,6 +57,10 @@ struct DlssNgxContext {
 	Size2i internal_size;
 	Size2i target_size;
 	bool has_exposure = false;
+	// Tuning-knob values baked into the NGX feature at creation; when the
+	// live knobs diverge, context_stale() asks for a recreation.
+	bool created_mv_jittered = false;
+	bool created_no_autoexposure = false;
 	~DlssNgxContext();
 };
 
@@ -94,6 +98,10 @@ public:
 	// p_has_exposure: an explicit exposure texture will be provided each
 	// frame; otherwise the feature is created with NGX auto-exposure.
 	DlssNgxContext *create_context(Size2i p_internal_size, Size2i p_target_size, bool p_has_exposure);
+
+	// True when live tuning knobs no longer match the flags baked into the
+	// context's NGX feature - the caller should recreate the context.
+	bool context_stale(const DlssNgxContext *p_context) const;
 
 	struct Parameters {
 		DlssNgxContext *context = nullptr;

@@ -92,8 +92,9 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_fsr2(Rende
 // ensure_mfx_temporal. The `true` return doubles as the accumulation reset.
 #ifdef DLSS_D3D12_ENABLED
 bool RenderForwardClustered::RenderBufferDataForwardClustered::ensure_dlss(RendererRD::DlssNgxEffect *p_effect, bool p_has_exposure) {
-	if (dlss_context != nullptr && dlss_context->has_exposure != p_has_exposure) {
-		// Exposure mode is baked into the NGX feature; recreate.
+	if (dlss_context != nullptr && (dlss_context->has_exposure != p_has_exposure || p_effect->context_stale(dlss_context))) {
+		// Exposure mode and the tuning-knob create flags are baked into the
+		// NGX feature; recreate when either changes.
 		memdelete(dlss_context);
 		dlss_context = nullptr;
 	}
