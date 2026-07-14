@@ -66,6 +66,24 @@ smearing), D3D12 debug-layer pass over the callback resource states, reactive
 mask (Godot's is an alpha-swizzle view natives can't consume — omitted),
 context destroy while frames are in flight (resize during play).
 
+### Phase 3 tuning knobs (env vars, read at launch)
+
+SDK sign/flag conventions are settled by A/B testing on hardware; set these
+before launching the exported game, watch the console wrapper, and report the
+combination that looks right — it then becomes the compiled default.
+
+| Env var | Effect |
+|---|---|
+| `RW_DLSS_JITTER_SIGN_X` / `_Y` = `-1` | flip DLSS jitter offset per axis |
+| `RW_DLSS_MV_SIGN_X` / `_Y` = `-1` | flip DLSS motion-vector scale per axis |
+| `RW_DLSS_MV_JITTERED` = `1` | set the MVJittered create flag (Godot's velocity IS computed from jittered matrices, so this is a prime suspect) |
+| `RW_DLSS_NO_AUTOEXPOSURE` = `1` | drop the AutoExposure create flag (fixed 1.0 exposure) |
+| `RW_FSR3_JITTER_SIGN_X` / `_Y`, `RW_FSR3_MV_SIGN_X` / `_Y` = `-1` | same flips for the ffx path |
+
+The FSR3 availability probe is a trial `ffxCreateContext` (ground truth) and
+always prints a visible verdict line: `available, provider '...'` or
+`no upscale provider (rc N)`.
+
 ## The Phase 1 patch series (SDK-free)
 
 All changes are tagged with a `RaceWars fork:` comment.
