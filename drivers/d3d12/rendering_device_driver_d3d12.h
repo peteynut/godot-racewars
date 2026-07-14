@@ -920,6 +920,16 @@ public:
 
 	virtual void set_object_name(ObjectType p_type, ID p_driver_id, const String &p_name) override final;
 	virtual uint64_t get_resource_native_handle(DriverResource p_type, ID p_driver_id) override final;
+
+#if defined(DLSS_D3D12_ENABLED) || defined(FFX_UPSCALER_D3D12_ENABLED)
+	// RaceWars fork: native access for the proprietary upscaler wrappers
+	// (renderer_rd/effects/dlss_ngx.cpp, ffx_upscaler.cpp), which record SDK
+	// work onto the live command list from a driver callback.
+	ID3D12GraphicsCommandList *command_buffer_get_native_list(CommandBufferID p_cmd_buffer) const;
+	// The SDKs set their own descriptor heaps / PSO / root signature on the
+	// list; drop the driver's cached bindings so they re-apply lazily.
+	void command_buffer_mark_external_commands(CommandBufferID p_cmd_buffer);
+#endif
 	virtual uint64_t get_total_memory_used() override final;
 	virtual uint64_t get_lazily_memory_used() override final;
 	virtual uint64_t limit_get(Limit p_limit) override final;

@@ -20,16 +20,51 @@ stock editor exports happily with fork-built templates.
 
 | Phase | What | State |
 |---|---|---|
-| **1** | Enum / feature / viewport plumbing, SDK-free; compiles on every platform; templates CI | **this branch** |
-| 2 | `dlss_ngx` + `ffx_upscaler` effect wrappers (NGX + ffx-api), D3D12 `has_feature` probe, dispatch | not started |
+| **1** | Enum / feature / viewport plumbing, SDK-free; compiles on every platform; templates CI | **done** |
+| **2** | `dlss_ngx` + `ffx_upscaler` effect wrappers (NGX + ffx-api), D3D12 `has_feature` probe, dispatch | **this branch** — compiles (macOS + Windows CI); runtime-unverified |
 | 3 | Hardware verification (any GPU → FSR 3.1.5; RTX 20xx+ → DLSS/DLAA; RX 7000/9000 → FSR 4.1) | not started |
 | 4 | `export.sh` DLL shipping + licensing checklist | not started |
 
-Phase 1 adds the *contract* (enum values + capability bits + safe fallback) but
-**no SDK code and no upscale dispatch**. Because every stock driver's
-`has_feature()` returns false for the new bits, the new modes are never selected
-on any build produced today and always degrade to FSR 2 — which is exactly why
-this is safe to carry ahead of the SDK work.
+Phase 2 is compiled into the Windows templates behind `dlss=yes
+ffx_upscaler=yes` (both default **off**, MSVC + D3D12 + x86_64 only). On any
+build without the flags nothing changes; with the flags, availability is still
+runtime-gated (NGX probe / signed-DLL presence), so machines without support
+keep degrading to FSR 2 exactly as in Phase 1.
+
+## Phase 2: how the wrappers work
+
+Both are modeled on MetalFX (`renderer_rd/effects/metal_fx.mm`) — native
+texture handles via `get_driver_resource`, SDK work recorded into the live
+frame via `RD::driver_callback_add`, whose declared `CallbackResource` usages
+make the render graph transition inputs to shader-resource and the output to
+UAV before the callback runs.
+
+- `effects/dlss_ngx.{h,cpp}` (`DLSS_D3D12_ENABLED`): direct NGX. Probe =
+  `GetFeatureRequirements` → `Init_with_ProjectID` → `SuperSampling.Available`
+  (cached; this is what `has_feature(SUPPORTS_DLSS)` returns). The NGX feature
+  is created lazily inside the first driver callback (creation records GPU
+  work). Quality bucket snaps from the render scale; scale 1.0 = DLAA. Links
+  `nvsdk_ngx_s.lib` from a `DLSS_SDK` checkout at build time (Bevy pattern —
+  the proprietary SDK is never committed).
+- `effects/ffx_upscaler.{h,cpp}` (`FFX_UPSCALER_D3D12_ENABLED`): ffx-api.
+  `LoadLibrary(amd_fidelityfx_loader_dx12.dll)` + 5 `GetProcAddress` entries;
+  probe = upscale-provider version query on the device. Context creation
+  chains upscale desc → DX12 backend desc → API version desc; the provider
+  version (FSR 4.x vs 3.1.x) is printed at context creation. Headers are the
+  MIT `thirdparty/amd_ffx_api/`; the signed DLLs ship beside the exe (Phase 4).
+- D3D12 driver additions: `command_buffer_get_native_list` and
+  `command_buffer_mark_external_commands` (drops descriptor-heap/PSO/root-sig
+  caches after foreign SDK work so the driver re-binds lazily), plus the two
+  `has_feature` cases.
+- Dispatch: two new branches beside FSR2 in `render_forward_clustered.cpp`
+  with identical input conventions (jitter = `taa_jitter * internal_size *
+  0.5`, MV scale = internal size, reverse-Z, linear-HDR color, ms frame delta).
+  Contexts live on `RenderBufferDataForwardClustered` like FSR2/MFX ones.
+
+Known Phase 3 items (need hardware): MV/jitter sign check (wrong sign = obvious
+smearing), D3D12 debug-layer pass over the callback resource states, reactive
+mask (Godot's is an alpha-swizzle view natives can't consume — omitted),
+context destroy while frames are in flight (resize during play).
 
 ## The Phase 1 patch series (SDK-free)
 
