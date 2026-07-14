@@ -124,17 +124,22 @@ struct FfxKnobs {
 FfxKnobs ffx_knobs;
 
 const FfxKnobs &_ffx_get_knobs() {
-	if (!ffx_knobs.loaded) {
-		OS *os = OS::get_singleton();
-		ffx_knobs.jitter_sign_x = (os->get_environment("RW_FSR3_JITTER_SIGN_X") == "-1") ? -1.0f : 1.0f;
-		ffx_knobs.jitter_sign_y = (os->get_environment("RW_FSR3_JITTER_SIGN_Y") == "-1") ? -1.0f : 1.0f;
-		ffx_knobs.mv_sign_x = (os->get_environment("RW_FSR3_MV_SIGN_X") == "-1") ? -1.0f : 1.0f;
-		ffx_knobs.mv_sign_y = (os->get_environment("RW_FSR3_MV_SIGN_Y") == "-1") ? -1.0f : 1.0f;
-		if (ffx_knobs.jitter_sign_x < 0 || ffx_knobs.jitter_sign_y < 0 || ffx_knobs.mv_sign_x < 0 || ffx_knobs.mv_sign_y < 0) {
-			print_line(vformat("FFX upscaler: tuning knobs active - jitter sign (%d,%d), MV sign (%d,%d).",
-					(int)ffx_knobs.jitter_sign_x, (int)ffx_knobs.jitter_sign_y, (int)ffx_knobs.mv_sign_x, (int)ffx_knobs.mv_sign_y));
-		}
-		ffx_knobs.loaded = true;
+	// Re-read live every dispatch so the game's debug overlay can flip these
+	// at runtime through OS.set_environment.
+	OS *os = OS::get_singleton();
+	FfxKnobs fresh;
+	fresh.jitter_sign_x = (os->get_environment("RW_FSR3_JITTER_SIGN_X") == "-1") ? -1.0f : 1.0f;
+	fresh.jitter_sign_y = (os->get_environment("RW_FSR3_JITTER_SIGN_Y") == "-1") ? -1.0f : 1.0f;
+	fresh.mv_sign_x = (os->get_environment("RW_FSR3_MV_SIGN_X") == "-1") ? -1.0f : 1.0f;
+	fresh.mv_sign_y = (os->get_environment("RW_FSR3_MV_SIGN_Y") == "-1") ? -1.0f : 1.0f;
+	bool changed = !ffx_knobs.loaded ||
+			fresh.jitter_sign_x != ffx_knobs.jitter_sign_x || fresh.jitter_sign_y != ffx_knobs.jitter_sign_y ||
+			fresh.mv_sign_x != ffx_knobs.mv_sign_x || fresh.mv_sign_y != ffx_knobs.mv_sign_y;
+	if (changed) {
+		fresh.loaded = true;
+		ffx_knobs = fresh;
+		print_line(vformat("FFX upscaler: tuning knobs - jitter sign (%d,%d), MV sign (%d,%d).",
+				(int)ffx_knobs.jitter_sign_x, (int)ffx_knobs.jitter_sign_y, (int)ffx_knobs.mv_sign_x, (int)ffx_knobs.mv_sign_y));
 	}
 	return ffx_knobs;
 }

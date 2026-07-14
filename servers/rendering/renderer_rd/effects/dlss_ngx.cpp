@@ -74,9 +74,11 @@ struct NgxState {
 
 NgxState ngx;
 
-// Phase 3 hardware-tuning knobs (read once at startup, set before launch).
-// SDK sign/flag conventions can only be settled by A/B on real GPUs; once the
-// right combination is confirmed these become the defaults and the knobs go.
+// Phase 3 hardware-tuning knobs, re-read live every dispatch so the game's
+// debug overlay can flip them at runtime through OS.set_environment (the
+// zero-API channel into the fork). SDK sign/flag conventions can only be
+// settled by A/B on real GPUs; once the right combination is confirmed these
+// become the defaults and the knobs go.
 //   RW_DLSS_JITTER_SIGN_X / _Y  = -1   flip the jitter offset sign per axis
 //   RW_DLSS_MV_SIGN_X / _Y      = -1   flip the motion-vector scale per axis
 //   RW_DLSS_MV_JITTERED         = 1    tell DLSS the MVs contain jitter
@@ -101,20 +103,25 @@ float _knob_sign(const String &p_env) {
 }
 
 const DlssKnobs &_dlss_knobs() {
-	if (!knobs.loaded) {
-		OS *os = OS::get_singleton();
-		knobs.jitter_sign_x = _knob_sign("RW_DLSS_JITTER_SIGN_X");
-		knobs.jitter_sign_y = _knob_sign("RW_DLSS_JITTER_SIGN_Y");
-		knobs.mv_sign_x = _knob_sign("RW_DLSS_MV_SIGN_X");
-		knobs.mv_sign_y = _knob_sign("RW_DLSS_MV_SIGN_Y");
-		knobs.mv_jittered = os->get_environment("RW_DLSS_MV_JITTERED") == "1";
-		knobs.no_autoexposure = os->get_environment("RW_DLSS_NO_AUTOEXPOSURE") == "1";
-		if (knobs.jitter_sign_x < 0 || knobs.jitter_sign_y < 0 || knobs.mv_sign_x < 0 || knobs.mv_sign_y < 0 || knobs.mv_jittered || knobs.no_autoexposure) {
-			print_line(vformat("DLSS: tuning knobs active - jitter sign (%d,%d), MV sign (%d,%d), MV jittered %s, no auto-exposure %s.",
-					(int)knobs.jitter_sign_x, (int)knobs.jitter_sign_y, (int)knobs.mv_sign_x, (int)knobs.mv_sign_y,
-					knobs.mv_jittered ? "yes" : "no", knobs.no_autoexposure ? "yes" : "no"));
-		}
-		knobs.loaded = true;
+	OS *os = OS::get_singleton();
+	DlssKnobs fresh;
+	fresh.jitter_sign_x = _knob_sign("RW_DLSS_JITTER_SIGN_X");
+	fresh.jitter_sign_y = _knob_sign("RW_DLSS_JITTER_SIGN_Y");
+	fresh.mv_sign_x = _knob_sign("RW_DLSS_MV_SIGN_X");
+	fresh.mv_sign_y = _knob_sign("RW_DLSS_MV_SIGN_Y");
+	fresh.mv_jittered = os->get_environment("RW_DLSS_MV_JITTERED") == "1";
+	fresh.no_autoexposure = os->get_environment("RW_DLSS_NO_AUTOEXPOSURE") == "1";
+
+	bool changed = !knobs.loaded ||
+			fresh.jitter_sign_x != knobs.jitter_sign_x || fresh.jitter_sign_y != knobs.jitter_sign_y ||
+			fresh.mv_sign_x != knobs.mv_sign_x || fresh.mv_sign_y != knobs.mv_sign_y ||
+			fresh.mv_jittered != knobs.mv_jittered || fresh.no_autoexposure != knobs.no_autoexposure;
+	if (changed) {
+		fresh.loaded = true;
+		knobs = fresh;
+		print_line(vformat("DLSS: tuning knobs - jitter sign (%d,%d), MV sign (%d,%d), MV jittered %s, no auto-exposure %s.",
+				(int)knobs.jitter_sign_x, (int)knobs.jitter_sign_y, (int)knobs.mv_sign_x, (int)knobs.mv_sign_y,
+				knobs.mv_jittered ? "yes" : "no", knobs.no_autoexposure ? "yes" : "no"));
 	}
 	return knobs;
 }
@@ -254,6 +261,14 @@ bool DlssNgxEffect::is_available(void *p_d3d12_device, void *p_dxgi_adapter) {
 	return ngx.available;
 }
 
+bool DlssNgxEffect::context_stale(const DlssNgxContext *p_context) const {
+	if (p_context == nullptr || (p_context->feature == nullptr && !p_context->feature_failed)) {
+		return false; // Feature not created yet - it will pick up current knobs.
+	}
+	const DlssKnobs &k = _dlss_knobs();
+	return p_context->created_mv_jittered != k.mv_jittered || p_context->created_no_autoexposure != k.no_autoexposure;
+}
+
 DlssNgxContext *DlssNgxEffect::create_context(Size2i p_internal_size, Size2i p_target_size, bool p_has_exposure) {
 	ERR_FAIL_COND_V(!ngx.initialized, nullptr);
 
@@ -332,12 +347,15 @@ void DlssNgxEffect::callback(RDD *p_driver, RDD::CommandBufferID p_command_buffe
 		create_params.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR |
 				NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
 				NVSDK_NGX_DLSS_Feature_Flags_DepthInverted;
-		if (_dlss_knobs().mv_jittered) {
+		const DlssKnobs &create_knobs = _dlss_knobs();
+		if (create_knobs.mv_jittered) {
 			create_params.InFeatureCreateFlags |= NVSDK_NGX_DLSS_Feature_Flags_MVJittered;
 		}
-		if (!ctx->has_exposure && !_dlss_knobs().no_autoexposure) {
+		if (!ctx->has_exposure && !create_knobs.no_autoexposure) {
 			create_params.InFeatureCreateFlags |= NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
 		}
+		ctx->created_mv_jittered = create_knobs.mv_jittered;
+		ctx->created_no_autoexposure = create_knobs.no_autoexposure;
 
 		NVSDK_NGX_Handle *handle = nullptr;
 		NVSDK_NGX_Result res = NGX_D3D12_CREATE_DLSS_EXT(cmd_list, 1, 1, &handle, params, &create_params);
