@@ -26,7 +26,9 @@ jobs:
   windows-mono-templates:
     runs-on: windows-latest
     name: Windows D3D12 Mono templates (x86_64)
-    timeout-minutes: 180
+    # A cold run compiles editor + both templates (~2h); give headroom over the
+    # old 180 cap that a hung smoke step pushed us past.
+    timeout-minutes: 300
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -118,7 +120,7 @@ jobs:
         with:
           name: racewars-windows-mono-templates
 
+      # Templates carry no project, so --version is the only self-contained check;
+      # --headless --quit would try to load a project, print "pck missing" and hang.
       - name: Smoke test
-        run: |
-          ./bin/godot.windows.template_release.x86_64.mono.console.exe --version
-          ./bin/godot.windows.template_release.x86_64.mono.console.exe --headless --quit
+        run: ./bin/godot.windows.template_release.x86_64.mono.console.exe --version
