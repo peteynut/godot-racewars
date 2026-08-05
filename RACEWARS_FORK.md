@@ -1,7 +1,16 @@
 # RaceWars engine fork
 
-A thin, rebasable fork of Godot, branched off the **`4.6.3-stable`** tag on
-branch **`racewars-upscalers`**. Its only purpose is to add the DLSS / DLAA and
+A thin, rebasable fork of Godot. Current series: branch
+**`racewars-upscalers-47`** on the **`4.7.1-stable`** tag (rebased 2026-08-05;
+the original `racewars-upscalers` branch off `4.6.3-stable` is kept as-is,
+plus `racewars-upscalers-4.6-backup`). The 4.7 rebase renumbered the mode
+contract - upstream took Scaling3DMode value 5 for `NEAREST`, so **DLSS = 6,
+FSR3 = 7, MAX = 8** (mirrored in the game's `UpscalerCatalog.cs`) - and the
+series gained a **MetalFX temporal correctness fix** (jitterOffset was passed
+in UV units instead of pixels, and motionVectorScaleY needed negating for
+Metal's y-down convention; see the game repo's `docs/metalfx-jitter/REPORT.md`
+for the isolation matrix - the fix makes MetalFX temporal beat FSR2 and is
+drafted for upstreaming). Its only purpose is to add the DLSS / DLAA and
 FSR 3/4 upscalers that stock Godot cannot expose (no custom-upscaler hook — see
 `godot-proposals#13718` and the game repo's `UPSCALING.md`, which is the design
 reference for this work).
