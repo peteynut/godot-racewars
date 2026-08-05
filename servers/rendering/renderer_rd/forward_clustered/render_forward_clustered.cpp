@@ -1843,14 +1843,14 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			break;
 		// RaceWars fork: only reachable when the D3D12 driver advertised the
 		// feature (renderer_viewport remaps these to FSR2 otherwise).
-		case RS::VIEWPORT_SCALING_3D_MODE_DLSS:
+		case RSE::VIEWPORT_SCALING_3D_MODE_DLSS:
 #ifdef DLSS_D3D12_ENABLED
 			scale_type = SCALE_DLSS;
 #else
 			scale_type = SCALE_NONE;
 #endif
 			break;
-		case RS::VIEWPORT_SCALING_3D_MODE_FSR3:
+		case RSE::VIEWPORT_SCALING_3D_MODE_FSR3:
 #ifdef FFX_UPSCALER_D3D12_ENABLED
 			scale_type = SCALE_FSR3;
 #else
