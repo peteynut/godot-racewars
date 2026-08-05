@@ -160,7 +160,15 @@ MFXTemporalContext *MFXTemporalEffect::create_context(CreateParams p_params) con
 	context->scaler = scaler;
 
 	scaler.motionVectorScaleX = p_params.motion_vector_scale.x;
-	scaler.motionVectorScaleY = p_params.motion_vector_scale.y;
+	// RaceWars fork: Metal expects motion vectors in y-DOWN pixel coordinates
+	// ("an object that moves down and to the right by 10 pixels [has] motion
+	// vector (-10,-10)" - MTLFXTemporalScaler.h). Godot's velocity buffer is
+	// y-up (NDC-style), so the Y scale must be negated; stock 4.6 passed it
+	// positive, which inverted every vertical reprojection and made anything
+	// moving on screen churn under MetalFX temporal (measured 3x the frame-to-
+	// frame instability of FSR2 on the same scene; fixing this + the jitter
+	// units below beats FSR2).
+	scaler.motionVectorScaleY = -p_params.motion_vector_scale.y;
 	scaler.depthReversed = true; // Godot uses reverse Z per https://github.com/godotengine/godot/pull/88328
 
 	GODOT_CLANG_WARNING_POP
