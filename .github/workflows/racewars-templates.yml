@@ -10,7 +10,7 @@ name: 🏎 RaceWars Windows Templates
 on:
   workflow_dispatch:
   push:
-    branches: [racewars-upscalers]
+    branches: [racewars-upscalers, racewars-upscalers-47]
 
 env:
   # Commit of github.com/NVIDIA/DLSS the wrappers were written against
